@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react';
-import { initializeApp } from 'firebase/app';
-import { getAuth, signInWithCustomToken, onAuthStateChanged, signInAnonymously } from 'firebase/auth';
-import { getFirestore, collection, addDoc, onSnapshot, serverTimestamp, doc, deleteDoc, query } from 'firebase/firestore';
+import { useState, useEffect, useRef } from 'react';
+
+// Se asume que html2canvas se carga de forma global en el entorno.
+// Se puede incluir en el archivo HTML principal con una etiqueta <script>:
+// <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
 
 // Tailwind CSS is assumed to be available
 // Lucid icons for UI, assumed to be available
@@ -56,6 +57,18 @@ const HeadphonesIcon = () => (
 const MonitorIcon = () => (
   <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-monitor"><rect width="20" height="15" x="2" y="3" rx="2"/><path d="M12 18v4"/><path d="M8 22h8"/></svg>
 );
+const ListIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-list"><line x1="8" x2="21" y1="6" y2="6"/><line x1="8" x2="21" y1="12" y2="12"/><line x1="8" x2="21" y1="18" y2="18"/><line x1="3" x2="3.01" y1="6" y2="6"/><line x1="3" x2="3.01" y1="12" y2="12"/><line x1="3" x2="3.01" y1="18" y2="18"/></svg>
+);
+const FileUpIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-file-up"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M12 12v9"/><path d="m15 15-3-3-3 3"/></svg>
+);
+const DownloadIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-download"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
+);
+const ImageIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-image"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>
+);
 
 
 // Data for component tiers (for quick local lookups)
@@ -104,14 +117,6 @@ function App() {
   const [componentInfo, setComponentInfo] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
-  const [quotes, setQuotes] = useState([]);
-  const [isSaving, setIsSaving] = useState(false);
-  const [saveMessage, setSaveMessage] = useState("");
-  const [db, setDb] = useState(null);
-  const [auth, setAuth] = useState(null);
-  const [userId, setUserId] = useState(null);
-  const [searchTerm, setSearchTerm] = useState("");
-  const [sortBy, setSortBy] = useState("dateDesc"); // New state for sorting
 
   // State for multi-component build
   const [currentBuild, setCurrentBuild] = useState([{ name: '', type: 'cpu' }]);
@@ -127,52 +132,35 @@ function App() {
   const [comparisonError, setComparisonError] = useState("");
   const [isGeneralAnalysis, setIsGeneralAnalysis] = useState(false);
 
+  // State for history, stored in localStorage
+  const [history, setHistory] = useState([]);
+  const [showClearConfirm, setShowClearConfirm] = useState(false); // State for the confirmation modal
+  const [showSavePrompt, setShowSavePrompt] = useState(false); // New state for saving confirmation
+  const [quoteToSave, setQuoteToSave] = useState(null); // New state to hold the quote before saving
 
-  const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-  const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-  const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+  // Ref for the analysis result div to be exported as an image
+  const analysisRef = useRef(null);
 
+  // Load history from localStorage on initial render
   useEffect(() => {
-    if (Object.keys(firebaseConfig).length > 0) {
-      const app = initializeApp(firebaseConfig);
-      const firestore = getFirestore(app);
-      const authInstance = getAuth(app);
-      setDb(firestore);
-      setAuth(authInstance);
-
-      onAuthStateChanged(authInstance, async (user) => {
-        if (user) {
-          setUserId(user.uid);
-        } else {
-          try {
-            if (initialAuthToken) {
-              await signInWithCustomToken(authInstance, initialAuthToken);
-            } else {
-              await signInAnonymously(authInstance);
-            }
-          } catch (e) {
-            console.error("Error al iniciar sesión:", e);
-          }
-        }
-      });
+    try {
+      const storedHistory = localStorage.getItem('pcBuildHistory');
+      if (storedHistory) {
+        setHistory(JSON.parse(storedHistory));
+      }
+    } catch (e) {
+      console.error("Failed to load history from localStorage", e);
     }
-  }, [firebaseConfig, initialAuthToken]);
+  }, []);
 
+  // Save history to localStorage whenever it changes
   useEffect(() => {
-    if (db && userId) {
-      const quotesCollectionPath = `/artifacts/${appId}/users/${userId}/quotes`;
-      const q = query(collection(db, quotesCollectionPath));
-      const unsubscribe = onSnapshot(q, (snapshot) => {
-        const fetchedQuotes = snapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data(),
-        }));
-        setQuotes(fetchedQuotes);
-      });
-
-      return () => unsubscribe();
+    try {
+      localStorage.setItem('pcBuildHistory', JSON.stringify(history));
+    } catch (e) {
+      console.error("Failed to save history to localStorage", e);
     }
-  }, [db, userId, appId]);
+  }, [history]);
 
   const fetchWithRetry = async (url, options, retries = 3, delay = 1000) => {
     for (let i = 0; i < retries; i++) {
@@ -271,7 +259,7 @@ function App() {
 
     const analyzeGeneralComponent = async () => {
       try {
-        const prompt = `Proporciona una guía de compra y análisis general para el siguiente tipo de producto: ${componentType}. El análisis debe estar en formato JSON con una clave 'summary' que es un arreglo de objetos (cada objeto con 'heading' y 'points') y una clave 'recommendations' que es un arreglo de objetos (cada objeto con 'component' y 'model', por ejemplo, 'GPU' con un modelo recomendado que sea compatible y del mismo nivel de gama). Si el tipo de componente no existe, devuelve un objeto JSON con la clave 'error' y un mensaje descriptivo.`;
+        const prompt = `Proporciona una guía de compra y análisis general para el siguiente tipo de producto: ${componentType}. El análisis debe estar en formato JSON con una clave 'summary' que es un arreglo de objetos (cada objeto con 'heading' y 'points') y una clave 'recommendations' que es un arreglo de objetos (cada objeto con 'component' y 'model', por ejemplo, 'GPU' con un modelo recomendado que sea compatible y del mismo nivel de gama). Si el tipo de componente no existe, proporciona una clave 'error' con un mensaje descriptivo.`;
         const payload = {
             contents: [{ role: "user", parts: [{ text: prompt }] }],
             generationConfig: {
@@ -341,40 +329,6 @@ function App() {
     setIsLoading(false);
   };
 
-  const handleSaveQuote = async (analysisData, type) => {
-    if (!db || !userId) {
-      setSaveMessage('No se puede guardar la cotización. Analiza un componente primero.');
-      return;
-    }
-    setIsSaving(true);
-    try {
-      const quotesCollectionRef = collection(db, `/artifacts/${appId}/users/${userId}/quotes`);
-      await addDoc(quotesCollectionRef, {
-        type: type, // 'single', 'build', 'comparison'
-        components: type === 'build' ? currentBuild : type === 'single' ? [{ name: componentName, analysis: analysisData }] : [{ name: componentA }, { name: componentB }],
-        analysis: analysisData,
-        createdAt: serverTimestamp(),
-      });
-      setSaveMessage('¡Cotización guardada exitosamente!');
-    } catch (error) {
-      console.error("Error al guardar la cotización: ", error);
-      setSaveMessage('Error al guardar la cotización. Por favor, revisa la consola para más detalles.');
-    } finally {
-      setIsSaving(false);
-      setTimeout(() => setSaveMessage(""), 5000);
-    }
-  };
-
-  const handleDeleteQuote = async (id) => {
-    if (!db || !userId) return;
-    try {
-      const docRef = doc(db, `/artifacts/${appId}/users/${userId}/quotes`, id);
-      await deleteDoc(docRef);
-    } catch (error) {
-      console.error("Error al eliminar la cotización: ", error);
-    }
-  };
-
   // Functions for multi-component build
   const addComponentField = () => {
     setCurrentBuild([...currentBuild, { name: '', type: 'cpu' }]);
@@ -406,7 +360,6 @@ function App() {
 
     try {
       const componentList = validComponents.map(comp => `${comp.type} ${comp.name}`).join(', ');
-      // The prompt now requests estimated price and FPS for specific games
       const prompt = `Analiza la compatibilidad y el rendimiento de los siguientes componentes para una PC: ${componentList}. Proporciona el análisis en formato JSON. El objeto JSON debe tener una clave 'conclusion' con un resumen general, una clave 'compatibility' que es un arreglo de objetos (cada objeto con 'component1', 'component2', 'compatibilityStatus' (compatible, incompatible, o advertencia), una 'comment' con una explicación, y dos nuevas claves: 'recommendationStatus' (recomendable, no recomendable, o advertencia) y 'detailedExplanation' explicando por qué es o no recomendable). Si se detecta un cuello de botella o un desequilibrio, añade una clave 'suggestedUpgrade' que sea un objeto con la clave 'componentToChange' y 'recommendedModel'. Finalmente, incluye una clave 'bottlenecks' que es un arreglo de strings con posibles cuellos de botella. Agrega también una clave 'estimatedPrice' con un string del precio total de la configuración en USD y una clave 'estimatedFPS' con un arreglo de objetos que contengan 'game' (ej. "Fortnite", "Warzone") y 'fps' (ej. "60-80 en 1080p"). Si el análisis no es posible, proporciona una clave 'error' con un mensaje.`;
       const payload = {
         contents: [{ role: "user", parts: [{ text: prompt }] }],
@@ -449,6 +402,17 @@ function App() {
         return;
       }
       setBuildAnalysisResult(parsedData);
+      
+      // Instead of directly saving, prepare the quote and show the prompt
+      const newQuote = {
+        id: Date.now(),
+        components: validComponents,
+        price: parsedData.estimatedPrice || 'N/A',
+        analysis: parsedData.conclusion,
+      };
+      setQuoteToSave(newQuote);
+      setShowSavePrompt(true);
+
     } catch (err) {
       console.error(err);
       setBuildError("Ocurrió un error al analizar la configuración. Por favor, intenta de nuevo.");
@@ -520,6 +484,110 @@ function App() {
     }
   };
 
+  const clearHistory = () => {
+    setHistory([]);
+    localStorage.removeItem('pcBuildHistory');
+    setShowClearConfirm(false);
+  };
+  
+  const handleExportHistory = () => {
+    const jsonString = JSON.stringify(history, null, 2);
+    const blob = new Blob([jsonString], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `historial-cotizaciones-${Date.now()}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+  
+  const handleLoadQuote = (quote) => {
+    setCurrentBuild(quote.components);
+    const buildSection = document.getElementById('build-section');
+    if (buildSection) {
+      buildSection.scrollIntoView({ behavior: 'smooth' });
+    }
+  };
+  
+  const handleSaveQuote = () => {
+    if (quoteToSave) {
+      setHistory(prevHistory => [...prevHistory, quoteToSave]);
+      setQuoteToSave(null);
+      setShowSavePrompt(false);
+    }
+  };
+
+  const handleExportText = () => {
+    if (buildAnalysisResult) {
+      const componentsList = currentBuild.map(c => `- ${c.type}: ${c.name}`).join('\n');
+      const compatibilityText = buildAnalysisResult.compatibility.map(comp =>
+        `\n- ${comp.component1} & ${comp.component2}:\n  Estado: ${comp.compatibilityStatus}\n  Comentario: ${comp.comment}\n  Recomendación: ${comp.detailedExplanation}`
+      ).join('\n');
+      const bottlenecksText = buildAnalysisResult.bottlenecks.map(b => `- ${b}`).join('\n');
+      
+      const textContent = `
+Análisis de Configuración de PC
+
+Componentes:
+${componentsList}
+
+Precio Estimado: ${buildAnalysisResult.estimatedPrice || 'No disponible'}
+Rendimiento Estimado (FPS):
+${buildAnalysisResult.estimatedFPS.map(item => `- ${item.game}: ${item.fps}`).join('\n')}
+
+Conclusión General:
+${buildAnalysisResult.conclusion}
+
+Compatibilidad y Recomendación:
+${compatibilityText}
+
+Cuellos de Botella:
+${bottlenecksText}
+      `.trim();
+
+      const blob = new Blob([textContent], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `analisis-pc-${Date.now()}.txt`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    }
+  };
+  
+  const handleExportImage = () => {
+    if (analysisRef.current) {
+        // Verifica si la librería html2canvas está disponible globalmente
+        if (typeof html2canvas === 'undefined') {
+            setBuildError("La función de exportar a imagen no está disponible. Por favor, asegúrate de que la librería html2canvas esté cargada.");
+            return;
+        }
+
+        html2canvas(analysisRef.current, {
+            backgroundColor: '#111827', // Use background of the container
+            logging: true,
+            useCORS: true,
+            scale: 2 // Higher scale for better quality
+        }).then(canvas => {
+            const image = canvas.toDataURL('image/png');
+            const link = document.createElement('a');
+            link.href = image;
+            link.download = `analisis-pc-${Date.now()}.png`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }).catch(err => {
+            console.error("Error al exportar a imagen:", err);
+            setBuildError("Hubo un problema al crear la imagen. Por favor, intenta de nuevo.");
+        });
+    }
+  };
+
+
   const getRecommendationStyle = (status) => {
     switch(status?.toLowerCase()) {
       case 'recomendable':
@@ -533,39 +601,8 @@ function App() {
     }
   };
 
-  // Logic for filtering and sorting quotes
-  const filteredAndSortedQuotes = quotes
-    .filter(quote =>
-      (quote.components && quote.components.some(comp => comp.name.toLowerCase().includes(searchTerm.toLowerCase()))) ||
-      (quote.type === 'build' && 'configuración de pc'.includes(searchTerm.toLowerCase())) ||
-      (quote.type === 'comparison' && 'comparación de componentes'.includes(searchTerm.toLowerCase()))
-    )
-    .sort((a, b) => {
-      const dateA = a.createdAt?.toDate() || new Date(0);
-      const dateB = b.createdAt?.toDate() || new Date(0);
-      if (sortBy === 'dateAsc') return dateA - dateB;
-      if (sortBy === 'dateDesc') return dateB - dateA;
-      if (sortBy === 'typeAsc') return a.type.localeCompare(b.type);
-      if (sortBy === 'typeDesc') return b.type.localeCompare(a.type);
-      return 0;
-    });
-
   return (
     <div className="flex flex-col items-center justify-start p-8 bg-gray-900 text-white min-h-screen font-inter">
-      {userId && (
-        <div className="flex items-center space-x-2 text-sm text-gray-500 mb-8 p-3 bg-gray-800 rounded-lg">
-          <UserIcon />
-          <span>ID de usuario:</span>
-          <span className="font-mono text-xs">{userId}</span>
-        </div>
-      )}
-
-      {saveMessage && (
-        <div className={`fixed top-4 left-1/2 -translate-x-1/2 p-4 rounded-xl shadow-lg transition-all duration-300 ${saveMessage.includes('exitosamente') ? 'bg-green-600 text-white' : 'bg-red-600 text-white'}`}>
-          <p className="text-sm font-semibold">{saveMessage}</p>
-        </div>
-      )}
-
       {/* Sección de análisis de un solo componente */}
       <div className="w-full max-w-4xl bg-gray-800 rounded-2xl shadow-xl p-8 mb-8">
         <h1 className="text-4xl font-bold mb-4 text-center text-amber-400">Analizador de Componentes</h1>
@@ -621,20 +658,6 @@ function App() {
                   )}
                 </div>
               </div>
-              <button
-                onClick={() => handleSaveQuote(componentInfo, 'single')}
-                disabled={isSaving}
-                className="px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white font-bold rounded-xl shadow-lg transition-all transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-2"
-              >
-                {isSaving ? (
-                  <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                ) : (
-                  <>
-                    <PlusIcon className="h-4 w-4" />
-                    <span>Guardar Cotización</span>
-                  </>
-                )}
-              </button>
             </div>
             <div className="space-y-4">
               {componentInfo.summary.map((section, index) => (
@@ -735,21 +758,6 @@ function App() {
               <h4 className="text-xl font-semibold mb-2 text-blue-300">Recomendación Final</h4>
               <p className="text-gray-300">{comparisonResult.recommendation}</p>
             </div>
-            
-            <button
-              onClick={() => handleSaveQuote(comparisonResult, 'comparison')}
-              disabled={isSaving}
-              className="mt-4 w-full px-6 py-3 bg-blue-500 hover:bg-blue-600 text-white font-bold rounded-xl shadow-lg transition-all transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-2"
-            >
-              {isSaving ? (
-                <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-              ) : (
-                <>
-                  <PlusIcon className="h-4 w-4" />
-                  <span>Guardar Comparación</span>
-                </>
-              )}
-            </button>
           </div>
         )}
       </div>
@@ -757,7 +765,7 @@ function App() {
       <hr className="w-full max-w-4xl border-gray-700 my-8"/>
 
       {/* Sección de construcción y comparación de PC (multi-componente) */}
-      <div className="w-full max-w-4xl bg-gray-800 rounded-2xl shadow-xl p-8 mb-8">
+      <div id="build-section" className="w-full max-w-4xl bg-gray-800 rounded-2xl shadow-xl p-8 mb-8">
         <h2 className="text-4xl font-bold mb-4 text-center text-green-400">Constructor y Comparador de PC</h2>
         <p className="text-gray-400 mb-6 text-center">
           Arma tu PC, compara componentes, y verifica la compatibilidad, el precio y el rendimiento (FPS).
@@ -823,7 +831,7 @@ function App() {
           <div className="bg-red-900 text-red-300 p-4 rounded-xl text-center mb-8"><p>{buildError}</p></div>
         )}
         {buildAnalysisResult && (
-          <div className="bg-gray-700 p-6 rounded-2xl shadow-inner animate-fade-in">
+          <div ref={analysisRef} className="bg-gray-700 p-6 rounded-2xl shadow-inner animate-fade-in">
             <h3 className="text-3xl font-bold mb-4 text-green-400">Análisis de Configuración</h3>
             
             {/* Sección de Precio Estimado */}
@@ -908,120 +916,132 @@ function App() {
                 </ul>
               </div>
             )}
-            <button
-              onClick={() => handleSaveQuote(buildAnalysisResult, 'build')}
-              disabled={isSaving}
-              className="mt-4 w-full px-6 py-3 bg-blue-500 hover:bg-blue-600 text-white font-bold rounded-xl shadow-lg transition-all transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-2"
-            >
-              {isSaving ? (
-                <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-              ) : (
-                <>
-                  <PlusIcon className="h-4 w-4" />
-                  <span>Guardar Configuración</span>
-                </>
-              )}
-            </button>
+            <div className="mt-6 flex justify-center space-x-4">
+              <button
+                onClick={handleExportImage}
+                className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-xl shadow-lg transition-all transform hover:scale-105 flex items-center space-x-2"
+              >
+                <ImageIcon className="h-5 w-5" />
+                <span>Exportar a Imagen</span>
+              </button>
+              <button
+                onClick={handleExportText}
+                className="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white font-bold rounded-xl shadow-lg transition-all transform hover:scale-105 flex items-center space-x-2"
+              >
+                <FileTextIcon className="h-5 w-5" />
+                <span>Exportar a Texto</span>
+              </button>
+            </div>
           </div>
         )}
       </div>
 
       <hr className="w-full max-w-4xl border-gray-700 my-8"/>
-
-      {/* Historial de Cotizaciones */}
+      
+      {/* Sección de Historial de Cotizaciones */}
       <div className="w-full max-w-4xl bg-gray-800 rounded-2xl shadow-xl p-8">
-        <h2 className="text-4xl font-bold mb-6 text-center text-blue-400">Historial de Cotizaciones</h2>
-        <div className="flex flex-col sm:flex-row items-center space-y-4 sm:space-y-0 sm:space-x-4 mb-6">
-          <div className="relative w-full">
-            <input
-              type="text"
-              className="w-full px-4 py-3 pl-12 rounded-xl bg-gray-700 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
-              placeholder="Buscar por nombre de componente o tipo..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-            />
-            <SearchIcon className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400" />
+        <div className="flex flex-col sm:flex-row justify-between items-center mb-6 space-y-4 sm:space-y-0">
+          <h2 className="text-4xl font-bold text-gray-400 flex items-center space-x-2">
+            <ListIcon className="h-8 w-8 text-gray-500" />
+            <span>Historial de Cotizaciones</span>
+          </h2>
+          <div className="flex space-x-2">
+            <button
+              onClick={handleExportHistory}
+              className="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white font-bold rounded-xl shadow-lg transition-all transform hover:scale-105 flex items-center space-x-2"
+              disabled={history.length === 0}
+            >
+              <DownloadIcon className="h-5 w-5" />
+              <span>Exportar JSON</span>
+            </button>
+            <button
+              onClick={() => setShowClearConfirm(true)}
+              className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl shadow-lg transition-all transform hover:scale-105 flex items-center space-x-2"
+              disabled={history.length === 0}
+            >
+              <Trash2Icon className="h-5 w-5" />
+              <span>Limpiar</span>
+            </button>
           </div>
-          <select
-            value={sortBy}
-            onChange={(e) => setSortBy(e.target.value)}
-            className="w-full sm:w-auto px-4 py-3 rounded-xl bg-gray-700 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
-          >
-            <option value="dateDesc">Fecha (Más Reciente)</option>
-            <option value="dateAsc">Fecha (Más Antigua)</option>
-            <option value="typeAsc">Tipo (A-Z)</option>
-            <option value="typeDesc">Tipo (Z-A)</option>
-          </select>
         </div>
-        {filteredAndSortedQuotes.length > 0 ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {filteredAndSortedQuotes.map((quote) => (
-              <div key={quote.id} className="bg-gray-700 p-4 rounded-xl shadow-inner flex flex-col space-y-2">
-                <div className="flex items-center justify-between text-blue-300">
-                  <div className="flex items-center space-x-2 truncate">
-                    <FileTextIcon className="w-5 h-5"/>
-                    {quote.type === 'build' ? (
-                      <h4 className="text-lg font-bold">Configuración de PC</h4>
-                    ) : quote.type === 'single' ? (
-                      <h4 className="text-lg font-bold truncate">{quote.components[0]?.name}</h4>
-                    ) : (
-                      <h4 className="text-lg font-bold">Comparación</h4>
-                    )}
-                  </div>
+        {history.length > 0 ? (
+          <div className="space-y-4">
+            {history.map((quote) => (
+              <div key={quote.id} className="p-6 bg-gray-700 rounded-xl shadow-inner border border-gray-600">
+                <h4 className="text-lg font-semibold text-gray-300 mb-2">Configuración:</h4>
+                <p className="text-sm text-gray-400 mb-4">{quote.components.map(c => `${c.type}: ${c.name}`).join(', ')}</p>
+                <h4 className="text-lg font-semibold text-gray-300 mb-2">Precio:</h4>
+                <p className="text-sm text-white font-bold mb-4">{quote.price}</p>
+                <h4 className="text-lg font-semibold text-gray-300 mb-2">Análisis:</h4>
+                <p className="text-sm text-gray-400">{quote.analysis}</p>
+                <div className="mt-4 flex justify-end">
                   <button
-                    onClick={() => handleDeleteQuote(quote.id)}
-                    className="p-1 text-red-400 hover:text-red-500 transition-colors"
-                    aria-label="Eliminar cotización"
+                    onClick={() => handleLoadQuote(quote)}
+                    className="px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white font-bold rounded-xl transition-all transform hover:scale-105 flex items-center space-x-2"
                   >
-                    <Trash2Icon className="h-5 w-5" />
+                    <FileUpIcon className="h-5 w-5" />
+                    <span>Cargar en el Constructor</span>
                   </button>
                 </div>
-                <div className="text-xs text-gray-400">
-                  {quote.createdAt && <p>Guardado el {new Date(quote.createdAt.toDate()).toLocaleDateString()}</p>}
-                  {quote.type === 'single' && (
-                    <p className="capitalize">Gama: <span className="font-semibold">{quote.analysis.gama}</span></p>
-                  )}
-                  {quote.type === 'build' && (
-                    <p className="capitalize">Componentes: <span className="font-semibold">{quote.components.length}</span></p>
-                  )}
-                </div>
-                <button
-                  onClick={() => {
-                    // Resetting states before showing details
-                    setComponentInfo(null);
-                    setBuildAnalysisResult(null);
-                    setComparisonResult(null);
-                    setComponentName("");
-
-                    if (quote.type === 'single') {
-                      setComponentName(quote.components[0].name);
-                      setComponentInfo(quote.analysis);
-                    } else if (quote.type === 'build') {
-                      setCurrentBuild(quote.components);
-                      setBuildAnalysisResult(quote.analysis);
-                    } else if (quote.type === 'comparison') {
-                      setComponentA(quote.components[0].name);
-                      setComponentB(quote.components[1].name);
-                      setComparisonResult(quote.analysis);
-                    }
-                  }}
-                  className="mt-2 px-4 py-2 bg-gray-600 hover:bg-gray-500 text-white text-xs rounded-lg transition-colors"
-                >
-                  Ver Detalles
-                </button>
               </div>
             ))}
           </div>
         ) : (
-          <div className="text-center text-gray-500">
-            <p>Todavía no has guardado ninguna cotización.</p>
-            <p>Analiza un componente o crea una configuración para empezar.</p>
-          </div>
+          <p className="text-center text-gray-500 italic">No hay cotizaciones guardadas en el historial.</p>
         )}
       </div>
+
+      {/* Confirmation Modals */}
+      {showClearConfirm && (
+        <div className="fixed inset-0 bg-gray-950 bg-opacity-75 flex items-center justify-center p-4 z-50">
+          <div className="bg-gray-800 p-6 rounded-2xl shadow-2xl max-w-sm w-full text-center">
+            <h3 className="text-xl font-bold mb-4 text-red-400">¿Estás seguro?</h3>
+            <p className="text-gray-300 mb-6">Esta acción borrará todo tu historial de cotizaciones de forma permanente.</p>
+            <div className="flex justify-center space-x-4">
+              <button
+                onClick={() => setShowClearConfirm(false)}
+                className="px-6 py-2 bg-gray-600 hover:bg-gray-700 rounded-xl text-white font-bold"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={clearHistory}
+                className="px-6 py-2 bg-red-600 hover:bg-red-700 rounded-xl text-white font-bold"
+              >
+                Confirmar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showSavePrompt && (
+        <div className="fixed inset-0 bg-gray-950 bg-opacity-75 flex items-center justify-center p-4 z-50">
+          <div className="bg-gray-800 p-6 rounded-2xl shadow-2xl max-w-sm w-full text-center">
+            <h3 className="text-xl font-bold mb-4 text-green-400">¿Deseas guardar esta cotización?</h3>
+            <p className="text-gray-300 mb-6">Podrás verla más tarde en tu historial de cotizaciones.</p>
+            <div className="flex justify-center space-x-4">
+              <button
+                onClick={() => {
+                  setShowSavePrompt(false);
+                  setQuoteToSave(null);
+                }}
+                className="px-6 py-2 bg-gray-600 hover:bg-gray-700 rounded-xl text-white font-bold"
+              >
+                No guardar
+              </button>
+              <button
+                onClick={handleSaveQuote}
+                className="px-6 py-2 bg-green-600 hover:bg-green-700 rounded-xl text-white font-bold"
+              >
+                Guardar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 export default App;
-
